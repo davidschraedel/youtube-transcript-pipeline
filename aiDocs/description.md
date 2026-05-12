@@ -1,0 +1,1 @@
+This is a local pipeline that turns any YouTube playlist into a searchable, SQL-queryable transcript database. It automatically fetches subtitles, cleans the raw text, and surfaces everything through a simple browse-and-query UI, with the ability to copy retrieve outputs for LLM ingestion.
