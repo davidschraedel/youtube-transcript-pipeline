@@ -6,6 +6,12 @@
 
 ---
 
+## 2026-05-13
+
+- Expanded `.gitignore` (env files, keys, `secrets/`, common credential paths) so secrets stay out of the repo by default.
+- Added `aiDocs/mvp.md` with MVP scope (PRD P0: ingest/transform, Bronze/Silver, local DuckDB) so delivery targets stay explicit.
+- Added `aiDocs/architecture/2026-05-13_mvp-architecture.mmd` — Mermaid overview of the MVP path (yt-dlp → Bronze → Silver → SQL consumption).
+
 ## 2026-05-07
 
 - Added this file and changelog maintenance rules in `context.md` so intent stays in-repo.
