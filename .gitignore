@@ -4,3 +4,15 @@ ai/
 # Personal tool configuration (not committed)
 claude.md
 .cursorrules
+
+# Secrets
+.env
+.env.local
+.testEnvVars
+*.key
+*.pem
+secrets/
+
+# Credentials
+credentials.json
+config/production.yml

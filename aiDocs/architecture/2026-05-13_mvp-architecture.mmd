@@ -1,0 +1,41 @@
+%% YoutubeTranscriptPipeline — MVP architecture (aiDocs/mvp.md)
+%% Manual runs: Python + yt-dlp → Bronze → Silver → SQL consumption
+
+flowchart TB
+  subgraph external["External"]
+    YT["YouTube — playlist, video metadata, VTT captions"]
+  end
+
+  subgraph runtime["Runtime — Python, manual CLI"]
+    YTD["yt-dlp"]
+    ING["ingest.py — flat-playlist diff, chunked fetches, per-video fetch_status"]
+    TRF["transform.py — VTT → prose, dedupe, idempotent"]
+    ING --> YTD
+    YTD -.->|"HTTPS"| YT
+  end
+
+  subgraph store["Persistence — local DuckDB (.duckdb)"]
+    subgraph bronze["Bronze"]
+      V["videos"]
+      PVM["playlist_video_membership"]
+      TB["transcripts_bronze"]
+    end
+    subgraph silver["Silver"]
+      TS["transcripts_silver — video_id, full_text, source_language"]
+    end
+  end
+
+  subgraph consumption["MVP consumption"]
+    SQL["SQL client, ad-hoc scripts, notebooks"]
+  end
+
+  ING --> V
+  ING --> PVM
+  ING --> TB
+  TB --> TRF
+  TRF --> TS
+
+  V --> SQL
+  PVM --> SQL
+  TB --> SQL
+  TS --> SQL
