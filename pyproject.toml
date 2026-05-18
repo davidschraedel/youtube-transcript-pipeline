@@ -1,0 +1,17 @@
+[project]
+name = "youtube-transcript-pipeline"
+version = "0.1.0"
+description = "YouTube playlist transcript ingest, transform, and browse (local DuckDB)"
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb==1.5.2",
+    "python-dotenv==1.2.2",
+    "streamlit==1.57.0",
+    "yt-dlp==2026.3.17",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.0.3",
+    "pytest-cov==7.1.0",
+]

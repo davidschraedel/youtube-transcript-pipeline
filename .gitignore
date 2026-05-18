@@ -16,3 +16,26 @@ secrets/
 # Credentials
 credentials.json
 config/production.yml
+
+# Database
+youtube.duckdb
+*.duckdb
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Temp files from yt-dlp
+*.vtt
+*.info.json
+*.part
+*.ytdl
+
+# OS
+.DS_Store
