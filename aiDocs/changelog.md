@@ -6,13 +6,11 @@
 
 ---
 
-## 2026-05-18 (Phase 2)
-
-- Phase 2 (M2) complete: `pipeline/utils.py` with `parse_vtt`, `dedupe_repeated_phrases` (v3, max_ngram=12), and `classify_failure`; `pipeline/transform.py` (Bronze→Silver, idempotent, `--force` flag); 5 VTT fixtures; 32 pytest tests all green.
-- Added `[build-system]` + `[tool.hatch.build.targets.wheel]` to `pyproject.toml` so `pipeline` is installable via `uv sync` and importable in scripts without path hacks.
-
 ## 2026-05-18
 
+- Phase 3 (M3) complete: `pipeline/ingest.py` — flat-playlist ID fetch (`-j`), DB diff for incremental ingest, chunked per-video caption+metadata download (`--skip-download --write-auto-sub --sub-lang en --write-info-json`), per-video failure classification via `classify_failure`, per-chunk DuckDB transactions, upserts to `videos`/`playlist_video_membership`, append-only Bronze transcript writes, temp-file cleanup; configurable via env vars.
+- Phase 2 (M2) complete: `pipeline/utils.py` with `parse_vtt`, `dedupe_repeated_phrases` (v3, max_ngram=12), and `classify_failure`; `pipeline/transform.py` (Bronze→Silver, idempotent, `--force` flag); 5 VTT fixtures; 32 pytest tests all green.
+- Added `[build-system]` + `[tool.hatch.build.targets.wheel]` to `pyproject.toml` so `pipeline` is installable via `uv sync` and importable in scripts without path hacks.
 - Added `pipeline/schema.py` with idempotent DDL for Bronze (`videos`, `playlist_video_membership`, `transcripts_bronze`) and Silver (`transcripts_silver`); `fetch_status` constrained to the four pipeline outcomes so ingest can classify failures consistently.
 - Phase 1 (M1) complete: schema applies via `uv run python pipeline/schema.py`; smoke test checks `SELECT 1` and all four tables exist.
 - Initialized uv project (`pyproject.toml`, `uv.lock`, Python 3.13) with pinned runtime deps (`duckdb`, `yt-dlp`, `streamlit`, `python-dotenv`) and dev deps (`pytest`) so installs are reproducible before pipeline code lands.
