@@ -8,6 +8,7 @@
 
 ## 2026-05-18
 
+- `ingest.py`: rate-limited videos skip DB writes so re-runs retry them instead of treating them as ingested.
 - Phase 3 (M3) complete: `pipeline/ingest.py` — flat-playlist ID fetch (`-j`), DB diff for incremental ingest, chunked per-video caption+metadata download (`--skip-download --write-auto-sub --sub-lang en --write-info-json`), per-video failure classification via `classify_failure`, per-chunk DuckDB transactions, upserts to `videos`/`playlist_video_membership`, append-only Bronze transcript writes, temp-file cleanup; configurable via env vars.
 - Phase 2 (M2) complete: `pipeline/utils.py` with `parse_vtt`, `dedupe_repeated_phrases` (v3, max_ngram=12), and `classify_failure`; `pipeline/transform.py` (Bronze→Silver, idempotent, `--force` flag); 5 VTT fixtures; 32 pytest tests all green.
 - Added `[build-system]` + `[tool.hatch.build.targets.wheel]` to `pyproject.toml` so `pipeline` is installable via `uv sync` and importable in scripts without path hacks.

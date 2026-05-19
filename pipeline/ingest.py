@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import random
 from datetime import datetime
 
 import duckdb
@@ -268,7 +269,7 @@ def process_chunk(
     con: duckdb.DuckDBPyConnection,
     chunk: list[str],
     playlist_id: str,
-    sleep_per_video: int,
+    sleep_per_video: float,
 ) -> dict[str, int]:
     """Download captions for a chunk of video IDs and write to DB in one transaction.
 
@@ -299,23 +300,31 @@ def process_chunk(
                     os.remove(vtt_path)
                 elif returncode != 0:
                     fetch_status = classify_failure(returncode, stderr)
-                    print(
-                        f"  [{video_id}] {fetch_status}: {stderr.strip()[:120]}"
-                    )
                 else:
                     fetch_status = "no_subtitles"
 
                 if info_path:
                     os.remove(info_path)
 
-                upsert_video(con, video_id, info, fetch_status)
-                upsert_membership(con, playlist_id, video_id)
-
                 summary[fetch_status] = summary.get(fetch_status, 0) + 1
-                print(f"  [{video_id}] {fetch_status}")
+
+                if fetch_status == "rate_limited":
+                    print(
+                        f"  [{video_id}] rate_limited — skipping DB write "
+                        f"(will retry on re-run): {stderr.strip()[:120]}"
+                    )
+                else:
+                    upsert_video(con, video_id, info, fetch_status)
+                    upsert_membership(con, playlist_id, video_id)
+                    if returncode != 0:
+                        print(
+                            f"  [{video_id}] {fetch_status}: {stderr.strip()[:120]}"
+                        )
+                    else:
+                        print(f"  [{video_id}] {fetch_status}")
 
                 if idx < len(chunk) - 1:
-                    time.sleep(sleep_per_video)
+                    time.sleep(random.uniform(sleep_per_video - 1.0, sleep_per_video + 2.0))
 
             con.execute("COMMIT")
         except Exception:
@@ -339,7 +348,7 @@ def run_ingest(
     playlist_url: str,
     db_path: str,
     chunk_size: int,
-    sleep_per_video: int,
+    sleep_per_video: float,
     sleep_between_chunks: int,
 ) -> None:
     apply_schema(db_path)
@@ -419,7 +428,7 @@ def main() -> None:
 
     db_path = os.getenv("DB_PATH", "youtube.duckdb")
     chunk_size = int(os.getenv("CHUNK_SIZE", _CHUNK_SIZE_DEFAULT))
-    sleep_per_video = int(os.getenv("SLEEP_PER_VIDEO", _SLEEP_PER_VIDEO_DEFAULT))
+    sleep_per_video = float(os.getenv("SLEEP_PER_VIDEO", _SLEEP_PER_VIDEO_DEFAULT))
     sleep_between_chunks = int(
         os.getenv("SLEEP_BETWEEN_CHUNKS", _SLEEP_BETWEEN_CHUNKS_DEFAULT)
     )
