@@ -12,12 +12,14 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
 
 import duckdb
 from dotenv import load_dotenv
 
+from pipeline import log
 from pipeline.utils import dedupe_repeated_phrases, parse_vtt
 
 load_dotenv()
@@ -45,12 +47,13 @@ def run_transform(db_path: str, force: bool = False) -> None:
         rows = _get_rows(con, force)
 
         if not rows:
-            print("Nothing to process.")
+            print(json.dumps({"action": "run_transform", "result": {"processed": 0, "status": "nothing_to_process"}}))
             return
 
-        print(f"Processing {len(rows)} row(s).")
+        log.info({"action": "run_transform", "input": {"rows": len(rows), "force": force}})
 
         for video_id, raw_vtt, source_language in rows:
+            log.debug({"action": "transform_row", "video_id": video_id})
             cleaned = parse_vtt(raw_vtt)
             deduped = dedupe_repeated_phrases(cleaned)
 
@@ -66,7 +69,9 @@ def run_transform(db_path: str, force: bool = False) -> None:
                 [video_id, deduped, source_language],
             )
 
-        print(f"Done. {len(rows)} row(s) written to transcripts_silver.")
+        result = {"action": "run_transform", "result": {"processed": len(rows), "status": "complete"}}
+        print(json.dumps(result))
+        log.info(result)
 
 
 def main() -> None:
@@ -83,7 +88,7 @@ def main() -> None:
     db_path = os.getenv("DB_PATH", "youtube.duckdb")
 
     if not os.path.exists(db_path):
-        print(f"ERROR: database not found at {db_path!r}", file=sys.stderr)
+        log.error({"action": "main", "error": "database not found", "db_path": db_path})
         sys.exit(1)
 
     run_transform(db_path, force=args.force)

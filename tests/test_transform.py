@@ -1,15 +1,23 @@
 """
-Unit tests for pipeline.utils: parse_vtt, dedupe_repeated_phrases,
-and classify_failure.
+Unit and integration tests for pipeline.utils, pipeline.transform, and
+pipeline.schema.
+
+Coverage:
+  parse_vtt, dedupe_repeated_phrases, classify_failure (pure utils)
+  _get_rows (transform helper)
+  run_transform end-to-end (Bronze → Silver, idempotency, --force)
 
 Fixture VTT files live in tests/fixtures/.
 """
 
+import json
 import os
 
 import duckdb
 import pytest
 
+from pipeline.schema import apply_schema
+from pipeline.transform import _get_rows, run_transform
 from pipeline.utils import classify_failure, dedupe_repeated_phrases, parse_vtt
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -181,119 +189,150 @@ class TestClassifyFailure:
 
 
 # ---------------------------------------------------------------------------
-# transform integration: run_transform on in-memory DuckDB
+# _get_rows — transform helper (uses apply_schema via db fixture)
 # ---------------------------------------------------------------------------
 
 
-def _make_db() -> duckdb.DuckDBPyConnection:
-    """Return an in-memory DuckDB connection with the full schema applied."""
-    con = duckdb.connect(":memory:")
-    con.execute(
-        """
-        CREATE TABLE videos (
-            video_id VARCHAR PRIMARY KEY,
-            title VARCHAR,
-            channel_name VARCHAR,
-            channel_id VARCHAR,
-            upload_date DATE,
-            duration INTEGER,
-            view_count BIGINT,
-            fetch_status VARCHAR NOT NULL CHECK (
-                fetch_status IN ('ok', 'no_subtitles', 'unavailable', 'rate_limited')
-            ),
-            ingested_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+@pytest.fixture
+def db(tmp_path):
+    """Open DuckDB connection with real schema applied; one file per test."""
+    path = str(tmp_path / "test.duckdb")
+    apply_schema(path)
+    con = duckdb.connect(path)
+    yield con
+    con.close()
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    """Return a temp DB path with schema applied; no open connection held."""
+    path = str(tmp_path / "test.duckdb")
+    apply_schema(path)
+    return path
+
+
+class TestGetRows:
+    def test_empty_bronze_is_noop(self, db):
+        assert _get_rows(db, force=False) == []
+
+    def test_returns_unprocessed_bronze_rows(self, db):
+        raw = load_fixture("repeated_phrases.vtt")
+        db.execute(
+            "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) "
+            "VALUES (?, ?, ?)",
+            ["vid1", raw, "en"],
         )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE transcripts_bronze (
-            video_id VARCHAR PRIMARY KEY,
-            raw_vtt VARCHAR NOT NULL,
-            source_language VARCHAR NOT NULL,
-            fetched_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        rows = _get_rows(db, force=False)
+        assert len(rows) == 1
+        assert rows[0][0] == "vid1"
+
+    def test_already_processed_rows_skipped_without_force(self, db):
+        raw = load_fixture("normal_overlapping.vtt")
+        db.execute(
+            "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) "
+            "VALUES (?, ?, ?)",
+            ["vid1", raw, "en"],
         )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE transcripts_silver (
-            video_id VARCHAR PRIMARY KEY,
-            full_text VARCHAR NOT NULL,
-            source_language VARCHAR NOT NULL,
-            transformed_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        db.execute(
+            "INSERT INTO transcripts_silver (video_id, full_text, source_language) "
+            "VALUES (?, ?, ?)",
+            ["vid1", "already processed", "en"],
         )
-        """
-    )
-    return con
+        assert _get_rows(db, force=False) == []
+
+    def test_force_flag_reprocesses_all(self, db):
+        raw = load_fixture("normal_overlapping.vtt")
+        db.execute(
+            "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) "
+            "VALUES (?, ?, ?)",
+            ["vid1", raw, "en"],
+        )
+        db.execute(
+            "INSERT INTO transcripts_silver (video_id, full_text, source_language) "
+            "VALUES (?, ?, ?)",
+            ["vid1", "already processed", "en"],
+        )
+        rows = _get_rows(db, force=True)
+        assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# run_transform — end-to-end integration
+# ---------------------------------------------------------------------------
 
 
 class TestRunTransform:
-    def test_empty_bronze_is_noop(self, capsys):
-        from pipeline.transform import _get_rows
-
-        con = _make_db()
-        rows = _get_rows(con, force=False)
-        assert rows == []
-
-    def test_transform_writes_silver_row(self):
-        from pipeline.transform import _get_rows
-
+    def test_produces_silver_row(self, db_path):
         raw = load_fixture("repeated_phrases.vtt")
-        con = _make_db()
-        con.execute(
-            "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) VALUES (?, ?, ?)",
-            ["vid1", raw, "en"],
-        )
+        with duckdb.connect(db_path) as con:
+            con.execute(
+                "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) "
+                "VALUES (?, ?, ?)",
+                ["vid1", raw, "en"],
+            )
 
-        rows = _get_rows(con, force=False)
+        run_transform(db_path)
+
+        with duckdb.connect(db_path) as con:
+            rows = con.execute(
+                "SELECT video_id, full_text FROM transcripts_silver"
+            ).fetchall()
         assert len(rows) == 1
+        assert rows[0][0] == "vid1"
+        assert "fox" in rows[0][1]
 
-        video_id, raw_vtt, source_language = rows[0]
-        cleaned = parse_vtt(raw_vtt)
-        deduped = dedupe_repeated_phrases(cleaned)
-
-        con.execute("DELETE FROM transcripts_silver WHERE video_id = ?", [video_id])
-        con.execute(
-            "INSERT INTO transcripts_silver (video_id, full_text, source_language) VALUES (?, ?, ?)",
-            [video_id, deduped, source_language],
-        )
-
-        silver_rows = con.execute("SELECT * FROM transcripts_silver").fetchall()
-        assert len(silver_rows) == 1
-        assert silver_rows[0][0] == "vid1"
-        assert "fox" in silver_rows[0][1]
-
-    def test_already_processed_rows_skipped_without_force(self):
-        from pipeline.transform import _get_rows
-
+    def test_nothing_to_process_when_silver_current(self, db_path, capsys):
         raw = load_fixture("normal_overlapping.vtt")
-        con = _make_db()
-        con.execute(
-            "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) VALUES (?, ?, ?)",
-            ["vid1", raw, "en"],
-        )
-        con.execute(
-            "INSERT INTO transcripts_silver (video_id, full_text, source_language) VALUES (?, ?, ?)",
-            ["vid1", "already processed", "en"],
-        )
+        with duckdb.connect(db_path) as con:
+            con.execute(
+                "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) "
+                "VALUES (?, ?, ?)",
+                ["vid1", raw, "en"],
+            )
 
-        rows = _get_rows(con, force=False)
-        assert rows == []
+        run_transform(db_path)
+        capsys.readouterr()
+        run_transform(db_path)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out.strip())
+        assert out["result"]["status"] == "nothing_to_process"
+        assert out["result"]["processed"] == 0
 
-    def test_force_flag_reprocesses_all(self):
-        from pipeline.transform import _get_rows
-
+    def test_force_reprocesses_existing_silver(self, db_path):
         raw = load_fixture("normal_overlapping.vtt")
-        con = _make_db()
-        con.execute(
-            "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) VALUES (?, ?, ?)",
-            ["vid1", raw, "en"],
-        )
-        con.execute(
-            "INSERT INTO transcripts_silver (video_id, full_text, source_language) VALUES (?, ?, ?)",
-            ["vid1", "already processed", "en"],
-        )
+        with duckdb.connect(db_path) as con:
+            con.execute(
+                "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) "
+                "VALUES (?, ?, ?)",
+                ["vid1", raw, "en"],
+            )
+            con.execute(
+                "INSERT INTO transcripts_silver (video_id, full_text, source_language) "
+                "VALUES (?, ?, ?)",
+                ["vid1", "old content", "en"],
+            )
 
-        rows = _get_rows(con, force=True)
-        assert len(rows) == 1
+        run_transform(db_path, force=True)
+
+        with duckdb.connect(db_path) as con:
+            row = con.execute(
+                "SELECT full_text FROM transcripts_silver WHERE video_id = 'vid1'"
+            ).fetchone()
+        assert row[0] != "old content"
+
+    def test_bronze_ok_count_equals_silver_count(self, db_path):
+        raw = load_fixture("repeated_phrases.vtt")
+        with duckdb.connect(db_path) as con:
+            for i in range(3):
+                con.execute(
+                    "INSERT INTO transcripts_bronze (video_id, raw_vtt, source_language) "
+                    "VALUES (?, ?, ?)",
+                    [f"vid{i}", raw, "en"],
+                )
+
+        run_transform(db_path)
+
+        with duckdb.connect(db_path) as con:
+            bronze = con.execute("SELECT COUNT(*) FROM transcripts_bronze").fetchone()[0]
+            silver = con.execute("SELECT COUNT(*) FROM transcripts_silver").fetchone()[0]
+        assert bronze == silver

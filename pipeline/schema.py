@@ -13,6 +13,8 @@ import sys
 import duckdb
 from dotenv import load_dotenv
 
+from pipeline import log
+
 load_dotenv()
 
 DDL_STATEMENTS = [
@@ -71,7 +73,7 @@ def apply_schema(db_path: str) -> None:
     with duckdb.connect(db_path) as con:
         for stmt in DDL_STATEMENTS:
             con.execute(stmt)
-        print(f"Schema applied to {db_path}")
+    log.info({"action": "apply_schema", "result": {"status": "ok", "db_path": db_path}})
 
 
 def smoke_test(db_path: str) -> None:
@@ -82,10 +84,10 @@ def smoke_test(db_path: str) -> None:
         tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
         missing = EXPECTED_TABLES - tables
         if missing:
-            print(f"ERROR: missing tables: {missing}", file=sys.stderr)
+            log.error({"action": "smoke_test", "error": "missing tables", "tables": sorted(missing)})
             sys.exit(1)
 
-        print(f"Smoke test passed. Tables present: {sorted(tables)}")
+    log.info({"action": "smoke_test", "result": {"status": "ok", "tables": sorted(tables)}})
 
 
 if __name__ == "__main__":

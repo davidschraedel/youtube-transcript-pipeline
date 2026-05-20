@@ -24,6 +24,7 @@ from datetime import datetime
 import duckdb
 from dotenv import load_dotenv
 
+from pipeline import log
 from pipeline.schema import apply_schema
 from pipeline.utils import classify_failure
 
@@ -65,11 +66,12 @@ def fetch_playlist_ids(playlist_url: str) -> list[str]:
             continue
 
     if result.returncode != 0 and not ids:
-        print(
-            f"ERROR: yt-dlp flat-playlist failed (exit {result.returncode}):\n"
-            f"{result.stderr.strip()}",
-            file=sys.stderr,
-        )
+        log.error({
+            "action": "fetch_playlist_ids",
+            "error": "yt-dlp flat-playlist failed",
+            "exit_code": result.returncode,
+            "stderr": result.stderr.strip(),
+        })
         sys.exit(1)
 
     return ids
@@ -309,19 +311,24 @@ def process_chunk(
                 summary[fetch_status] = summary.get(fetch_status, 0) + 1
 
                 if fetch_status == "rate_limited":
-                    print(
-                        f"  [{video_id}] rate_limited — skipping DB write "
-                        f"(will retry on re-run): {stderr.strip()[:120]}"
-                    )
+                    log.warn({
+                        "action": "process_video",
+                        "video_id": video_id,
+                        "result": "rate_limited",
+                        "detail": stderr.strip()[:120],
+                    })
                 else:
                     upsert_video(con, video_id, info, fetch_status)
                     upsert_membership(con, playlist_id, video_id)
                     if returncode != 0:
-                        print(
-                            f"  [{video_id}] {fetch_status}: {stderr.strip()[:120]}"
-                        )
+                        log.warn({
+                            "action": "process_video",
+                            "video_id": video_id,
+                            "result": fetch_status,
+                            "detail": stderr.strip()[:120],
+                        })
                     else:
-                        print(f"  [{video_id}] {fetch_status}")
+                        log.info({"action": "process_video", "video_id": video_id, "result": fetch_status})
 
                 if idx < len(chunk) - 1:
                     time.sleep(random.uniform(sleep_per_video - 1.0, sleep_per_video + 2.0))
@@ -353,9 +360,8 @@ def run_ingest(
 ) -> None:
     apply_schema(db_path)
 
-    print(f"Fetching playlist IDs from {playlist_url!r} ...")
+    log.info({"action": "run_ingest", "input": {"playlist_url": playlist_url}})
     all_ids = fetch_playlist_ids(playlist_url)
-    print(f"Found {len(all_ids)} video(s) in playlist.")
 
     playlist_id = _extract_playlist_id(playlist_url)
 
@@ -364,13 +370,13 @@ def run_ingest(
 
     new_ids = [vid for vid in all_ids if vid not in existing]
     already = len(all_ids) - len(new_ids)
-    print(
-        f"{len(new_ids)} new video(s) to ingest "
-        f"({already} already in DB)."
-    )
+    log.info({
+        "action": "fetch_playlist_ids",
+        "result": {"total": len(all_ids), "new": len(new_ids), "existing": already},
+    })
 
     if not new_ids:
-        print("Nothing to ingest.")
+        print(json.dumps({"action": "run_ingest", "result": {"status": "nothing_to_ingest"}}))
         return
 
     chunks = [
@@ -385,22 +391,18 @@ def run_ingest(
 
     with duckdb.connect(db_path) as con:
         for chunk_num, chunk in enumerate(chunks, 1):
-            print(f"\nChunk {chunk_num}/{len(chunks)} ({len(chunk)} video(s)) ...")
+            log.info({"action": "process_chunk", "chunk": chunk_num, "total_chunks": len(chunks), "size": len(chunk)})
             summary = process_chunk(con, chunk, playlist_id, sleep_per_video)
             for status, count in summary.items():
                 totals[status] = totals.get(status, 0) + count
 
             if chunk_num < len(chunks):
-                print(f"Sleeping {sleep_between_chunks}s between chunks ...")
+                log.info({"action": "sleep_between_chunks", "seconds": sleep_between_chunks})
                 time.sleep(sleep_between_chunks)
 
-    print(
-        f"\nIngest complete. "
-        f"ok={totals['ok']}  "
-        f"no_subtitles={totals['no_subtitles']}  "
-        f"unavailable={totals['unavailable']}  "
-        f"rate_limited={totals['rate_limited']}"
-    )
+    result = {"action": "run_ingest", "result": {**totals, "status": "complete"}}
+    print(json.dumps(result))
+    log.info(result)
 
 
 # ---------------------------------------------------------------------------
@@ -420,10 +422,11 @@ def main() -> None:
 
     playlist_url = args.playlist or os.getenv("PLAYLIST_URL")
     if not playlist_url:
-        print(
-            "ERROR: PLAYLIST_URL not set — pass --playlist or add to .env",
-            file=sys.stderr,
-        )
+        log.error({
+            "action": "main",
+            "error": "PLAYLIST_URL not set",
+            "hint": "pass --playlist or add to .env",
+        })
         sys.exit(1)
 
     db_path = os.getenv("DB_PATH", "youtube.duckdb")
