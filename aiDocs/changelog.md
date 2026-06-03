@@ -6,6 +6,10 @@
 
 ---
 
+## 2026-06-02
+
+- Phase 4 (M4) complete: ran `transform.py` on 1,048 pending Bronze rows (1,057 total); silver count matches ok videos; artifact scan clean on all rows; added `scripts/validate_transform.py` for repeatable count + VTT artifact checks.
+
 ## 2026-05-18
 
 - `ingest.py`: rate-limited videos skip DB writes so re-runs retry them instead of treating them as ingested.
