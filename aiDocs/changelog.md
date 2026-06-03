@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-06-03
+
+- `refresh.py` circuit breaker: aborts if tombstone count exceeds 20 without `--force-tombstone`; prevents false tombstones from partial yt-dlp playlist fetches.
+- `fetch_playlist_ids`: now aborts on any non-zero exit (even with partial output) instead of silently returning a truncated list.
+- Refresh progress: human-readable section/chunk lines on stdout during `pipeline/refresh.py`; final JSON summary unchanged for scripts.
+- Phase 5 tighten: refresh scopes transform to newly captioned IDs only; `--refresh-metadata` skips IDs already fetched in the same run.
+- Phase 5 (M5) complete: `pipeline/refresh.py` — flat-playlist diff for new IDs, tombstones, and `no_subtitles` retries; auto-transform to Silver on newly captioned videos; `--refresh-metadata` flag; 13 new pytest tests (88 total).
+
 ## 2026-06-02
 
 - Phase 4 (M4) complete: ran `transform.py` on 1,048 pending Bronze rows (1,057 total); silver count matches ok videos; artifact scan clean on all rows; added `scripts/validate_transform.py` for repeatable count + VTT artifact checks.

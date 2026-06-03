@@ -157,11 +157,7 @@ class TestFetchPlaylistIds:
             with pytest.raises(SystemExit):
                 fetch_playlist_ids("https://youtube.com/playlist?list=PLtest")
 
-    def test_nonzero_with_partial_stdout_silent(self):
-        # BUG(P3): non-zero exit with partial stdout silently returns a partial
-        # list without logging a warning. This test freezes the current (wrong)
-        # behavior so a future fix will produce a visible failure here.
-        # Desired behavior: log.warn + return partial list, or raise.
+    def test_nonzero_with_partial_stdout_aborts(self):
         mock = CompletedProcess(
             args=[],
             returncode=1,
@@ -169,8 +165,8 @@ class TestFetchPlaylistIds:
             stderr="Partial failure",
         )
         with patch("pipeline.ingest.subprocess.run", return_value=mock):
-            ids = fetch_playlist_ids("https://youtube.com/playlist?list=PLtest")
-        assert ids == ["abc123"]  # wrong: should warn or raise
+            with pytest.raises(SystemExit):
+                fetch_playlist_ids("https://youtube.com/playlist?list=PLtest")
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +278,7 @@ class TestProcessChunk:
     def test_ok_writes_all_tables(self, db):
         with patch("pipeline.ingest.fetch_video_captions", side_effect=_mock_fetch_ok):
             with _PATCH_SLEEP, _PATCH_UNIFORM:
-                summary = process_chunk(db, ["dQw4w9WgXcQ"], "PLtest", 0)
+                summary, _ = process_chunk(db, ["dQw4w9WgXcQ"], "PLtest", 0)
 
         assert summary["ok"] == 1
         assert db.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 1
@@ -294,7 +290,7 @@ class TestProcessChunk:
     def test_no_subtitles_writes_video_only(self, db):
         with patch("pipeline.ingest.fetch_video_captions", side_effect=_mock_fetch_no_subs):
             with _PATCH_SLEEP, _PATCH_UNIFORM:
-                summary = process_chunk(db, ["vid1"], "PLtest", 0)
+                summary, _ = process_chunk(db, ["vid1"], "PLtest", 0)
 
         assert summary["no_subtitles"] == 1
         assert db.execute(
@@ -307,7 +303,7 @@ class TestProcessChunk:
             "pipeline.ingest.fetch_video_captions", side_effect=_mock_fetch_unavailable
         ):
             with _PATCH_SLEEP, _PATCH_UNIFORM:
-                summary = process_chunk(db, ["vid1"], "PLtest", 0)
+                summary, _ = process_chunk(db, ["vid1"], "PLtest", 0)
 
         assert summary["unavailable"] == 1
         assert db.execute(
@@ -320,7 +316,7 @@ class TestProcessChunk:
             "pipeline.ingest.fetch_video_captions", side_effect=_mock_fetch_rate_limited
         ):
             with _PATCH_SLEEP, _PATCH_UNIFORM:
-                summary = process_chunk(db, ["vid1"], "PLtest", 0)
+                summary, _ = process_chunk(db, ["vid1"], "PLtest", 0)
 
         assert summary["rate_limited"] == 1
         assert db.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
@@ -331,7 +327,7 @@ class TestProcessChunk:
     def test_chunk_commit_both_videos_visible(self, db):
         with patch("pipeline.ingest.fetch_video_captions", side_effect=_mock_fetch_ok):
             with _PATCH_SLEEP, _PATCH_UNIFORM:
-                summary = process_chunk(db, ["vid1", "vid2"], "PLtest", 0)
+                summary, _ = process_chunk(db, ["vid1", "vid2"], "PLtest", 0)
 
         assert summary["ok"] == 2
         assert db.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 2

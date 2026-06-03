@@ -24,7 +24,7 @@ from datetime import datetime
 import duckdb
 from dotenv import load_dotenv
 
-from pipeline import log
+from pipeline import log, progress
 from pipeline.schema import apply_schema
 from pipeline.utils import classify_failure
 
@@ -65,14 +65,24 @@ def fetch_playlist_ids(playlist_url: str) -> list[str]:
         except json.JSONDecodeError:
             continue
 
-    if result.returncode != 0 and not ids:
-        log.error({
-            "action": "fetch_playlist_ids",
-            "error": "yt-dlp flat-playlist failed",
-            "exit_code": result.returncode,
-            "stderr": result.stderr.strip(),
-        })
-        sys.exit(1)
+    if result.returncode != 0:
+        if not ids:
+            log.error({
+                "action": "fetch_playlist_ids",
+                "error": "yt-dlp flat-playlist failed with no output",
+                "exit_code": result.returncode,
+                "stderr": result.stderr.strip(),
+            })
+            sys.exit(1)
+        else:
+            log.error({
+                "action": "fetch_playlist_ids",
+                "error": "yt-dlp flat-playlist failed with partial output — aborting to prevent false tombstones",
+                "exit_code": result.returncode,
+                "ids_parsed": len(ids),
+                "stderr": result.stderr.strip(),
+            })
+            sys.exit(1)
 
     return ids
 
@@ -87,6 +97,31 @@ def _extract_playlist_id(playlist_url: str) -> str:
 # ---------------------------------------------------------------------------
 # Per-video caption + metadata download
 # ---------------------------------------------------------------------------
+
+
+def fetch_video_metadata(video_id: str, tmp_dir: str) -> tuple[int, str]:
+    """Download info JSON for a single video (no captions).
+
+    Files are written to tmp_dir using %(id)s as the filename stem.
+    Returns (returncode, stderr).
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    output_tmpl = os.path.join(tmp_dir, "%(id)s.%(ext)s")
+    result = subprocess.run(
+        [
+            "yt-dlp",
+            "--skip-download",
+            "--write-info-json",
+            "--no-warnings",
+            "--no-progress",
+            "-o", output_tmpl,
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.returncode, result.stderr
 
 
 def fetch_video_captions(video_id: str, tmp_dir: str) -> tuple[int, str]:
@@ -181,6 +216,35 @@ def _parse_upload_date(date_str: str | None):
 # ---------------------------------------------------------------------------
 
 
+def update_video_metadata(
+    con: duckdb.DuckDBPyConnection,
+    video_id: str,
+    info: dict,
+) -> None:
+    """Update metadata columns on an existing videos row; fetch_status unchanged."""
+    con.execute(
+        """
+        UPDATE videos SET
+            title        = ?,
+            channel_name = ?,
+            channel_id   = ?,
+            upload_date  = ?,
+            duration     = ?,
+            view_count   = ?
+        WHERE video_id = ?
+        """,
+        [
+            info.get("title"),
+            info.get("channel") or info.get("uploader"),
+            info.get("channel_id") or info.get("uploader_id"),
+            _parse_upload_date(info.get("upload_date")),
+            info.get("duration"),
+            info.get("view_count"),
+            video_id,
+        ],
+    )
+
+
 def upsert_video(
     con: duckdb.DuckDBPyConnection,
     video_id: str,
@@ -256,7 +320,8 @@ def upsert_membership(
             (playlist_id, video_id, first_seen_at, last_seen_at)
         VALUES (?, ?, now(), now())
         ON CONFLICT (playlist_id, video_id) DO UPDATE SET
-            last_seen_at = now()
+            last_seen_at = now(),
+            removed_at   = NULL
         """,
         [playlist_id, video_id],
     )
@@ -272,10 +337,15 @@ def process_chunk(
     chunk: list[str],
     playlist_id: str,
     sleep_per_video: float,
-) -> dict[str, int]:
+    show_progress: bool = False,
+    progress_offset: int = 0,
+    progress_total: int | None = None,
+) -> tuple[dict[str, int], list[str]]:
     """Download captions for a chunk of video IDs and write to DB in one transaction.
 
-    Returns a summary dict: {'ok': N, 'no_subtitles': N, 'unavailable': N, 'rate_limited': N}.
+    Returns (summary, ok_ids) where summary is
+    {'ok': N, 'no_subtitles': N, 'unavailable': N, 'rate_limited': N} and ok_ids
+    lists video IDs that received a new Bronze transcript this run.
     """
     summary: dict[str, int] = {
         "ok": 0,
@@ -283,6 +353,7 @@ def process_chunk(
         "unavailable": 0,
         "rate_limited": 0,
     }
+    ok_ids: list[str] = []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         con.execute("BEGIN")
@@ -299,11 +370,17 @@ def process_chunk(
                         raw_vtt = fh.read()
                     fetch_status = "ok"
                     insert_bronze(con, video_id, raw_vtt, lang_code or "en")
+                    ok_ids.append(video_id)
                     os.remove(vtt_path)
                 elif returncode != 0:
                     fetch_status = classify_failure(returncode, stderr)
                 else:
                     fetch_status = "no_subtitles"
+
+                if show_progress:
+                    total = progress_total if progress_total is not None else progress_offset + len(chunk)
+                    n = progress_offset + idx + 1
+                    progress.line(f"[{n}/{total}] {video_id}  {fetch_status}")
 
                 if info_path:
                     os.remove(info_path)
@@ -327,8 +404,63 @@ def process_chunk(
                             "result": fetch_status,
                             "detail": stderr.strip()[:120],
                         })
-                    else:
+                    elif not show_progress:
                         log.info({"action": "process_video", "video_id": video_id, "result": fetch_status})
+
+                if idx < len(chunk) - 1:
+                    time.sleep(random.uniform(sleep_per_video - 1.0, sleep_per_video + 2.0))
+
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+
+    return summary, ok_ids
+
+
+def process_metadata_chunk(
+    con: duckdb.DuckDBPyConnection,
+    chunk: list[str],
+    sleep_per_video: float,
+) -> dict[str, int]:
+    """Fetch metadata for a chunk of video IDs; update existing rows only.
+
+    Returns a summary dict: {'updated': N, 'skipped': N, 'failed': N}.
+    """
+    summary: dict[str, int] = {"updated": 0, "skipped": 0, "failed": 0}
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        con.execute("BEGIN")
+        try:
+            for idx, video_id in enumerate(chunk):
+                exists = con.execute(
+                    "SELECT 1 FROM videos WHERE video_id = ?",
+                    [video_id],
+                ).fetchone()
+                if not exists:
+                    summary["skipped"] += 1
+                    continue
+
+                returncode, stderr = fetch_video_metadata(video_id, tmp_dir)
+                info_path = find_info_json(tmp_dir, video_id)
+                info = _load_info_json(info_path) if info_path else None
+
+                if info_path:
+                    os.remove(info_path)
+
+                if info:
+                    update_video_metadata(con, video_id, info)
+                    summary["updated"] += 1
+                    log.info({"action": "refresh_metadata", "video_id": video_id, "result": "updated"})
+                else:
+                    summary["failed"] += 1
+                    log.warn({
+                        "action": "refresh_metadata",
+                        "video_id": video_id,
+                        "result": "failed",
+                        "exit_code": returncode,
+                        "detail": stderr.strip()[:120],
+                    })
 
                 if idx < len(chunk) - 1:
                     time.sleep(random.uniform(sleep_per_video - 1.0, sleep_per_video + 2.0))
@@ -392,7 +524,7 @@ def run_ingest(
     with duckdb.connect(db_path) as con:
         for chunk_num, chunk in enumerate(chunks, 1):
             log.info({"action": "process_chunk", "chunk": chunk_num, "total_chunks": len(chunks), "size": len(chunk)})
-            summary = process_chunk(con, chunk, playlist_id, sleep_per_video)
+            summary, _ = process_chunk(con, chunk, playlist_id, sleep_per_video)
             for status, count in summary.items():
                 totals[status] = totals.get(status, 0) + count
 

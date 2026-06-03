@@ -25,8 +25,23 @@ from pipeline.utils import dedupe_repeated_phrases, parse_vtt
 load_dotenv()
 
 
-def _get_rows(con: duckdb.DuckDBPyConnection, force: bool) -> list[tuple[str, str, str]]:
+def _get_rows(
+    con: duckdb.DuckDBPyConnection,
+    force: bool,
+    video_ids: list[str] | None = None,
+) -> list[tuple[str, str, str]]:
     """Return (video_id, raw_vtt, source_language) tuples to process."""
+    if video_ids:
+        placeholders = ", ".join(["?"] * len(video_ids))
+        return con.execute(
+            f"""
+            SELECT video_id, raw_vtt, source_language
+            FROM transcripts_bronze
+            WHERE video_id IN ({placeholders})
+            """,
+            video_ids,
+        ).fetchall()
+
     if force:
         return con.execute(
             "SELECT video_id, raw_vtt, source_language FROM transcripts_bronze"
@@ -42,15 +57,26 @@ def _get_rows(con: duckdb.DuckDBPyConnection, force: bool) -> list[tuple[str, st
     ).fetchall()
 
 
-def run_transform(db_path: str, force: bool = False) -> None:
+def run_transform(
+    db_path: str,
+    force: bool = False,
+    video_ids: list[str] | None = None,
+    print_summary: bool = True,
+) -> None:
     with duckdb.connect(db_path) as con:
-        rows = _get_rows(con, force)
+        rows = _get_rows(con, force, video_ids)
 
         if not rows:
-            print(json.dumps({"action": "run_transform", "result": {"processed": 0, "status": "nothing_to_process"}}))
+            result = {"action": "run_transform", "result": {"processed": 0, "status": "nothing_to_process"}}
+            if print_summary:
+                print(json.dumps(result))
+            log.info(result)
             return
 
-        log.info({"action": "run_transform", "input": {"rows": len(rows), "force": force}})
+        log.info({
+            "action": "run_transform",
+            "input": {"rows": len(rows), "force": force, "video_ids": video_ids},
+        })
 
         for video_id, raw_vtt, source_language in rows:
             log.debug({"action": "transform_row", "video_id": video_id})
@@ -70,7 +96,8 @@ def run_transform(db_path: str, force: bool = False) -> None:
             )
 
         result = {"action": "run_transform", "result": {"processed": len(rows), "status": "complete"}}
-        print(json.dumps(result))
+        if print_summary:
+            print(json.dumps(result))
         log.info(result)
 
 
