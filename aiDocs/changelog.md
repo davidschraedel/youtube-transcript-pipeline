@@ -8,12 +8,13 @@
 
 ## 2026-06-03
 
-- `ingest.py`: link `playlist_video_membership` for overlap videos on any playlist (multi-playlist safe); `nothing_to_fetch` when no new caption pulls needed.
+- `ingest.py`: link `playlist_video_membership` for overlap videos on any playlist (multi-playlist safe); `nothing_to_fetch` when no new caption pulls needed; shared `touch_membership` helper (imported by `refresh.py`).
+- pytest suite: 93 tests (was 88 after M5; +5 for ingest membership linking and tombstone circuit breaker).
 - `refresh.py` circuit breaker: aborts if tombstone count exceeds 20 without `--force-tombstone`; prevents false tombstones from partial yt-dlp playlist fetches.
 - `fetch_playlist_ids`: now aborts on any non-zero exit (even with partial output) instead of silently returning a truncated list.
 - Refresh progress: human-readable section/chunk lines on stdout during `pipeline/refresh.py`; final JSON summary unchanged for scripts.
 - Phase 5 tighten: refresh scopes transform to newly captioned IDs only; `--refresh-metadata` skips IDs already fetched in the same run.
-- Phase 5 (M5) complete: `pipeline/refresh.py` — flat-playlist diff for new IDs, tombstones, and `no_subtitles` retries; auto-transform to Silver on newly captioned videos; `--refresh-metadata` flag; 13 new pytest tests (88 total).
+- Phase 5 (M5) complete: `pipeline/refresh.py` — flat-playlist diff for new IDs, tombstones, and `no_subtitles` retries; auto-transform to Silver on newly captioned videos; `--refresh-metadata` flag; 13 new pytest tests at ship.
 
 ## 2026-06-02
 
