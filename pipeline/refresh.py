@@ -30,6 +30,7 @@ from pipeline.ingest import (
     fetch_playlist_ids,
     process_chunk,
     process_metadata_chunk,
+    touch_membership,
     upsert_membership,
 )
 from pipeline.schema import apply_schema
@@ -102,22 +103,6 @@ def tombstone_removed(
         [playlist_id, *video_ids],
     ).fetchone()
     return rows[0] if rows else 0
-
-
-def touch_membership(
-    con: duckdb.DuckDBPyConnection,
-    playlist_id: str,
-    video_ids: list[str],
-) -> None:
-    """Update last_seen_at (and clear removed_at) for present snapshot videos."""
-    con.execute("BEGIN")
-    try:
-        for video_id in video_ids:
-            upsert_membership(con, playlist_id, video_id)
-        con.execute("COMMIT")
-    except Exception:
-        con.execute("ROLLBACK")
-        raise
 
 
 def _chunked_process(

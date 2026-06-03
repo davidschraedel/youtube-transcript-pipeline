@@ -20,13 +20,13 @@ import pytest
 from pipeline.ingest import (
     upsert_membership,
     upsert_video,
+    touch_membership,
 )
 from pipeline.refresh import (
     get_active_membership_ids,
     get_no_subtitles_ids,
     run_refresh,
     tombstone_removed,
-    touch_membership,
 )
 from pipeline.schema import apply_schema
 from pipeline.transform import run_transform as real_run_transform

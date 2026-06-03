@@ -8,6 +8,7 @@
 
 ## 2026-06-03
 
+- `ingest.py`: link `playlist_video_membership` for overlap videos on any playlist (multi-playlist safe); `nothing_to_fetch` when no new caption pulls needed.
 - `refresh.py` circuit breaker: aborts if tombstone count exceeds 20 without `--force-tombstone`; prevents false tombstones from partial yt-dlp playlist fetches.
 - `fetch_playlist_ids`: now aborts on any non-zero exit (even with partial output) instead of silently returning a truncated list.
 - Refresh progress: human-readable section/chunk lines on stdout during `pipeline/refresh.py`; final JSON summary unchanged for scripts.

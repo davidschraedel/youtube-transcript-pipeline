@@ -327,6 +327,24 @@ def upsert_membership(
     )
 
 
+def touch_membership(
+    con: duckdb.DuckDBPyConnection,
+    playlist_id: str,
+    video_ids: list[str],
+) -> None:
+    """Upsert playlist_video_membership rows; updates last_seen_at and clears removed_at."""
+    if not video_ids:
+        return
+    con.execute("BEGIN")
+    try:
+        for video_id in video_ids:
+            upsert_membership(con, playlist_id, video_id)
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Chunk processing
 # ---------------------------------------------------------------------------
@@ -501,14 +519,28 @@ def run_ingest(
         existing = get_existing_video_ids(con)
 
     new_ids = [vid for vid in all_ids if vid not in existing]
-    already = len(all_ids) - len(new_ids)
+    overlap_ids = [vid for vid in all_ids if vid in existing]
+    already = len(overlap_ids)
     log.info({
         "action": "fetch_playlist_ids",
         "result": {"total": len(all_ids), "new": len(new_ids), "existing": already},
     })
 
+    with duckdb.connect(db_path) as con:
+        if overlap_ids:
+            touch_membership(con, playlist_id, overlap_ids)
+
     if not new_ids:
-        print(json.dumps({"action": "run_ingest", "result": {"status": "nothing_to_ingest"}}))
+        result = {
+            "action": "run_ingest",
+            "result": {
+                "status": "nothing_to_fetch",
+                "linked": len(overlap_ids),
+                "new": 0,
+            },
+        }
+        print(json.dumps(result))
+        log.info(result)
         return
 
     chunks = [
@@ -532,7 +564,7 @@ def run_ingest(
                 log.info({"action": "sleep_between_chunks", "seconds": sleep_between_chunks})
                 time.sleep(sleep_between_chunks)
 
-    result = {"action": "run_ingest", "result": {**totals, "status": "complete"}}
+    result = {"action": "run_ingest", "result": {**totals, "linked": len(overlap_ids), "status": "complete"}}
     print(json.dumps(result))
     log.info(result)
 

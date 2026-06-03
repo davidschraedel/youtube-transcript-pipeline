@@ -378,10 +378,12 @@ class TestDiffAndRerun:
         new_ids = [v for v in all_ids if v not in existing]
         assert set(new_ids) == {"vid4", "vid5"}
 
-    def test_nothing_to_ingest_when_all_present(self, db_path, capsys):
+    def test_nothing_to_fetch_links_membership(self, db_path, capsys):
         with duckdb.connect(db_path) as con:
             upsert_video(con, "abc123", None, "ok")
             upsert_video(con, "def456", None, "ok")
+            upsert_membership(con, "PLother", "abc123")
+            upsert_membership(con, "PLother", "def456")
 
         with patch("pipeline.ingest.subprocess.run", return_value=_FLAT_PLAYLIST_2):
             with patch("pipeline.ingest.time.sleep"):
@@ -393,9 +395,64 @@ class TestDiffAndRerun:
                     sleep_between_chunks=0,
                 )
 
+        with duckdb.connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT playlist_id, video_id FROM playlist_video_membership
+                WHERE playlist_id = 'PLtest'
+                ORDER BY video_id
+                """
+            ).fetchall()
+            assert rows == [("PLtest", "abc123"), ("PLtest", "def456")]
+
         captured = capsys.readouterr()
         out = json.loads(captured.out.strip())
-        assert out["result"]["status"] == "nothing_to_ingest"
+        assert out["result"]["status"] == "nothing_to_fetch"
+        assert out["result"]["linked"] == 2
+        assert out["result"]["new"] == 0
+
+    def test_second_playlist_links_overlap_and_fetches_new(self, db_path):
+        with duckdb.connect(db_path) as con:
+            upsert_video(con, "abc123", None, "ok")
+            upsert_membership(con, "PLother", "abc123")
+
+        def mock_fetch_ok(video_id: str, tmp_dir: str) -> tuple[int, str]:
+            import os
+            vtt = os.path.join(tmp_dir, f"{video_id}.en.vtt")
+            with open(vtt, "w") as f:
+                f.write("WEBVTT\n\nHello\n")
+            info = os.path.join(tmp_dir, f"{video_id}.info.json")
+            with open(info, "w") as f:
+                json.dump(_INFO_JSON_MIN, f)
+            return 0, ""
+
+        with patch("pipeline.ingest.subprocess.run", return_value=_FLAT_PLAYLIST_2):
+            with patch("pipeline.ingest.fetch_video_captions", side_effect=mock_fetch_ok):
+                with patch("pipeline.ingest.time.sleep"):
+                    run_ingest(
+                        "https://youtube.com/playlist?list=PLtest",
+                        db_path,
+                        chunk_size=50,
+                        sleep_per_video=0,
+                        sleep_between_chunks=0,
+                    )
+
+        with duckdb.connect(db_path) as con:
+            assert con.execute(
+                """
+                SELECT COUNT(*) FROM playlist_video_membership
+                WHERE playlist_id = 'PLtest'
+                """
+            ).fetchone()[0] == 2
+            assert con.execute(
+                """
+                SELECT COUNT(*) FROM playlist_video_membership
+                WHERE playlist_id = 'PLother'
+                """
+            ).fetchone()[0] == 1
+            assert con.execute(
+                "SELECT COUNT(*) FROM transcripts_bronze WHERE video_id = 'def456'"
+            ).fetchone()[0] == 1
 
     def test_rate_limited_id_appears_in_next_diff(self, db):
         upsert_video(db, "vid1", None, "ok")
